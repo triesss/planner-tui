@@ -1,0 +1,20 @@
+{
+  "pomodoro": {
+    "work_min": 25,
+    "short_break_min": 5,
+    "long_break_min": 15,
+    "work_min_alt": 50,
+    "short_break_min_alt": 10,
+    "long_break_min_alt": 30
+  },
+  "view": {
+    "week_start_hour": 8,
+    "week_end_hour": 20
+  },
+  "shortcuts": {
+    "start_timer": "ctrl s",
+    "pause_timer": "ctrl p",
+    "stop_timer": "ctrl d",
+    "abort_timer": "ctrl a"
+  }
+}
