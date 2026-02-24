@@ -18,7 +18,7 @@ from utils.storage import load_events, load_tasks, save_events, save_tasks
 
 class ClickableText(urwid.Text):
     def __init__(self, markup, on_click=None, user_data=None):
-        super().__init__(markup)
+        super().__init__(markup, wrap="clip")
         self.on_click = on_click
         self.user_data = user_data
 
@@ -46,6 +46,7 @@ class PlannerApp:
         self.selected_date: date = date.today()
         self.calendar_focus_date: date = date.today()
         self.day_view_focus_hour: Optional[int] = None  # New state for day view focus
+        self.overlap_indices: dict = {} # Map (date, hour) -> index
         self.view_mode: str = "month"
         self.message: str = ""
         self.timer = PomodoroManager()
@@ -174,7 +175,10 @@ class PlannerApp:
             lines = [urwid.Text(day.strftime("%a %d"))]
 
             # Track occupied slots for week view as well for simplified display
-            occupied_slots = set()
+            # Pre-group items by start hour
+            items_by_start_hour = {}
+            for item_time, item in timed_items:
+                items_by_start_hour.setdefault(item_time.hour, []).append(item)
 
             for hour in range(self.cfg.view.week_start_hour, self.cfg.view.week_end_hour + 1):
                 slot_label = f"{hour:02d}:00"
@@ -185,34 +189,47 @@ class PlannerApp:
                     continue
 
                 item_for_this_hour = None
-                for item_time, item in timed_items:
-                    if item_time.hour == hour:  # Check if item starts at this exact hour
-                        item_for_this_hour = item
-                        # Mark all hours this item occupies as taken
-                        item_duration_td = None
-                        if isinstance(item, Event):
-                            if item.time_end:
-                                item_duration_td = datetime.combine(day, item.time_end) - datetime.combine(
-                                    day, item.time_start
-                                )
-                            elif item.duration:
-                                item_duration_td = item.duration
-                        elif isinstance(item, Task) and item.duration:
+                overlapping_count = 0
+                current_overlap_index = 0
+
+                if hour in items_by_start_hour:
+                    hour_items = items_by_start_hour[hour]
+                    overlapping_count = len(hour_items)
+                    
+                    # Use overlap index to select
+                    current_overlap_index = self.overlap_indices.get((day, hour), 0) % overlapping_count
+                    item = hour_items[current_overlap_index]
+                    
+                    item_for_this_hour = item
+                    
+                    # Mark all hours this item occupies as taken
+                    item_duration_td = None
+                    if isinstance(item, Event):
+                        if item.time_end:
+                            item_duration_td = datetime.combine(day, item.time_end) - datetime.combine(
+                                day, item.time_start
+                            )
+                        elif item.duration:
                             item_duration_td = item.duration
+                    elif isinstance(item, Task) and item.duration:
+                        item_duration_td = item.duration
 
-                        if not item_duration_td:
-                            item_duration_td = timedelta(hours=1)  # Default to 1 hour
+                    if not item_duration_td:
+                        item_duration_td = timedelta(hours=1)  # Default to 1 hour
 
-                        start_hour = item_time.hour
-                        end_hour_inclusive = (
-                            datetime.combine(day, item_time) + item_duration_td - timedelta(seconds=1)
-                        ).hour
-                        for h in range(start_hour, end_hour_inclusive + 1):
-                            occupied_slots.add(h)
-                        break
+                    start_hour = hour
+                    end_hour_inclusive = (
+                        datetime.combine(day, time(hour, 0)) + item_duration_td - timedelta(seconds=1)
+                    ).hour
+                    for h in range(start_hour, end_hour_inclusive + 1):
+                        occupied_slots.add(h)
 
                 if item_for_this_hour:
                     title_str = item_for_this_hour.title
+                    
+                    if overlapping_count > 1:
+                        title_str = f"({current_overlap_index + 1}/{overlapping_count}) {title_str}"
+                        
                     duration_str = ""
                     check_mark = "[ ]"  # Initialize check_mark here
                     if isinstance(item_for_this_hour, Event):
@@ -284,59 +301,78 @@ class PlannerApp:
         # Track occupied slots to prevent overlapping displays
         occupied_slots = {}  # Stores hour -> item
 
+        # Pre-group items by start hour
+        items_by_start_hour = {}
+        for item_time, item in timed_items:
+            items_by_start_hour.setdefault(item_time.hour, []).append(item)
+
         for hour in range(0, 24):
             slot_label = f"{hour:02d}:00"
-
-            # Determine if this hour is the focused hour for day view navigation
             is_focused_hour = self.day_view_focus_hour == hour
-            
             click_cb = _make_hour_focus_callback(hour)
 
             item_for_this_hour = occupied_slots.get(hour)
+            overlapping_count = 0
+            current_overlap_index = 0
 
-            if not item_for_this_hour:
-                for item_time, item in timed_items:
-                    # Calculate effective start time (for events/tasks)
-                    actual_start_dt = datetime.combine(self.selected_date, item_time)
+            # If this slot is not continued from a prior hour, see if any items start now
+            if not item_for_this_hour and hour in items_by_start_hour:
+                hour_items = items_by_start_hour[hour]
+                overlapping_count = len(hour_items)
+                
+                # Use overlap index to select
+                current_overlap_index = self.overlap_indices.get((self.selected_date, hour), 0) % overlapping_count
+                item = hour_items[current_overlap_index]
+                
+                item_for_this_hour = item
 
-                    # Calculate effective end time or use duration
-                    item_end_dt = None
-                    item_duration_td = None
+                # Calculate duration to mark slots as occupied
+                actual_start_dt = datetime.combine(self.selected_date, time(hour, 0))
+                item_end_dt = None
+                item_duration_td = None
 
-                    if isinstance(item, Event):
-                        if item.time_end:
-                            item_end_dt = datetime.combine(self.selected_date, item.time_end)
-                            item_duration_td = item_end_dt - actual_start_dt
-                        elif item.duration:
-                            item_duration_td = item.duration
-                            item_end_dt = actual_start_dt + item_duration_td
-                    elif isinstance(item, Task):
-                        if item.duration:
-                            item_duration_td = item.duration
-                            item_end_dt = actual_start_dt + item_duration_td
+                if isinstance(item, Event):
+                    if item.time_end:
+                        item_end_dt = datetime.combine(self.selected_date, item.time_end)
+                        item_duration_td = item_end_dt - actual_start_dt
+                    elif item.duration:
+                        item_duration_td = item.duration
+                elif isinstance(item, Task) and item.duration:
+                    item_duration_td = item.duration
 
-                    # If no duration or end time, default to 1 hour
-                    if not item_duration_td:
-                        item_duration_td = timedelta(hours=1)
-                        item_end_dt = actual_start_dt + item_duration_td
+                if not item_duration_td:
+                    item_duration_td = timedelta(hours=1)
 
-                    # Check if item starts within this hour slot
-                    # We consider an item starting if its start_time is <= current_time_slot and it hasn't been displayed yet
-                    # And its start_time is before the next hour slot
-                    if actual_start_dt.hour == hour and actual_start_dt.minute == 0:  # Only start events exactly on the hour for now
-                        item_for_this_hour = item
-                        # Mark all hours this item occupies as taken
-                        start_hour = actual_start_dt.hour
-                        end_hour_inclusive = (
-                            actual_start_dt + item_duration_td - timedelta(seconds=1)
-                        ).hour
+                start_hour = hour
+                end_hour_inclusive = (
+                    actual_start_dt + item_duration_td - timedelta(seconds=1)
+                ).hour
 
-                        for h in range(start_hour, end_hour_inclusive + 1):
-                            occupied_slots[h] = item
-                        break  # Found the item for this hour
+                for h in range(start_hour, end_hour_inclusive + 1):
+                    occupied_slots[h] = item
 
             if item_for_this_hour:
                 title_str = item_for_this_hour.title
+                
+                # Check how many overlapping items there are using _get_item_at_hour logic globally
+                # since we only computed overlapping_count for newly added items
+                if overlapping_count == 0:
+                    # In case it's a continued item, we should still show the overlap indicator
+                    # Determine start hour of this item to get correct overlap count
+                    if isinstance(item_for_this_hour, Event) and item_for_this_hour.time_start:
+                        sh = item_for_this_hour.time_start.hour
+                    elif isinstance(item_for_this_hour, Task) and item_for_this_hour.due_time:
+                        sh = item_for_this_hour.due_time.hour
+                    else:
+                        sh = hour
+                        
+                    if sh in items_by_start_hour:
+                        overlapping_count = len(items_by_start_hour[sh])
+                        current_overlap_index = self.overlap_indices.get((self.selected_date, sh), 0) % overlapping_count
+                
+                if overlapping_count > 1:
+                    title_str = f"({current_overlap_index + 1}/{overlapping_count}) {title_str}"
+                    
                 duration_str = ""
                 is_start_hour = False
                 
@@ -530,6 +566,23 @@ class PlannerApp:
                 self._refresh()
                 return
 
+        # Handle overlapping item cycling in day and week views
+        if self.view_mode in ("day", "week") and key in (",", "."):
+            direction = -1 if key == "," else 1
+            
+            target_hours = []
+            if self.view_mode == "day":
+                target_hours = [self.day_view_focus_hour] if self.day_view_focus_hour is not None else []
+            elif self.view_mode == "week":
+                # Cycle through all hours that have overlaps on the currently selected date
+                target_hours = range(0, 24)
+
+            for th in target_hours:
+                self._cycle_overlapping_items(self.selected_date, th, direction)
+                
+            self._refresh()
+            return
+
         # Handle day view navigation
         if self.view_mode == "day":
             if self.day_view_focus_hour is None:  # Should not happen with current _build_view logic but for safety
@@ -626,16 +679,41 @@ class PlannerApp:
             return
 
     def _get_item_at_hour(self, target_date: date, target_hour: int) -> Optional[Union[Event, Task]]:
-        """Helper to get the event/task starting at the target_hour on target_date."""
+        """Helper to get the active event/task starting at the target_hour on target_date, respecting overlap index."""
         daily_events: List[Event] = [e for e in self.events if e.date == target_date]
         daily_tasks: List[Task] = [t for t in self.tasks if t.due_date == target_date]
 
+        items_at_hour = []
         for item in daily_events + daily_tasks:
             if isinstance(item, Event) and item.time_start and item.time_start.hour == target_hour:
-                return item
-            if isinstance(item, Task) and item.due_time and item.due_time.hour == target_hour:
-                return item
-        return None
+                items_at_hour.append(item)
+            elif isinstance(item, Task) and item.due_time and item.due_time.hour == target_hour:
+                items_at_hour.append(item)
+                
+        if not items_at_hour:
+            return None
+            
+        idx = self.overlap_indices.get((target_date, target_hour), 0)
+        # Ensure index is within bounds in case items were deleted
+        idx = idx % len(items_at_hour) 
+        return items_at_hour[idx]
+
+    def _cycle_overlapping_items(self, target_date: date, target_hour: int, direction: int) -> None:
+        """Cycles the overlap index for a specific date and hour."""
+        daily_events: List[Event] = [e for e in self.events if e.date == target_date]
+        daily_tasks: List[Task] = [t for t in self.tasks if t.due_date == target_date]
+
+        items_at_hour = []
+        for item in daily_events + daily_tasks:
+            if isinstance(item, Event) and item.time_start and item.time_start.hour == target_hour:
+                items_at_hour.append(item)
+            elif isinstance(item, Task) and item.due_time and item.due_time.hour == target_hour:
+                items_at_hour.append(item)
+                
+        if len(items_at_hour) > 1:
+            current_idx = self.overlap_indices.get((target_date, target_hour), 0)
+            new_idx = (current_idx + direction) % len(items_at_hour)
+            self.overlap_indices[(target_date, target_hour)] = new_idx
     
     def _open_detail_view(self, item: Union[Event, Task]) -> None:
         if not self.loop: # Added for testing without full Urwid loop init
@@ -810,7 +888,7 @@ class PlannerApp:
             align="center",
             width=50,
             valign="middle",
-            height=13,
+            height="pack",
         )
         self.loop.widget = overlay
 
@@ -864,7 +942,7 @@ class PlannerApp:
             align="center",
             width=50,
             valign="middle",
-            height=11,
+            height="pack",
         )
         self.loop.widget = overlay
 
