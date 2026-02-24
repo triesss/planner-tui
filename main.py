@@ -338,7 +338,11 @@ class PlannerApp:
             if item_for_this_hour:
                 title_str = item_for_this_hour.title
                 duration_str = ""
+                is_start_hour = False
+                
                 if isinstance(item_for_this_hour, Event):
+                    if item_for_this_hour.time_start and item_for_this_hour.time_start.hour == hour:
+                        is_start_hour = True
                     if item_for_this_hour.time_end:
                         duration_str = f" ({item_for_this_hour.time_end.strftime('%H:%M')})"
                     elif item_for_this_hour.duration:
@@ -348,12 +352,17 @@ class PlannerApp:
                         duration_str = f" ({h:02d}:{m:02d})"
                     check_mark = "[x]" if item_for_this_hour.completed else "[ ]"
                 elif isinstance(item_for_this_hour, Task):
+                    if item_for_this_hour.due_time and item_for_this_hour.due_time.hour == hour:
+                        is_start_hour = True
                     if item_for_this_hour.duration:
                         total_minutes = int(item_for_this_hour.duration.total_seconds() / 60)
                         h = total_minutes // 60
                         m = total_minutes % 60
                         duration_str = f" ({h:02d}:{m:02d})"
                     check_mark = "[x]" if item_for_this_hour.completed else "[ ]"
+
+                if not is_start_hour:
+                    check_mark = "   "
 
                 display_text = f"{check_mark} {slot_label} {title_str}{duration_str}"
                 text_widget = ClickableText(display_text, self._make_detail_callback(item_for_this_hour))
