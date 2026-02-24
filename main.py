@@ -260,6 +260,12 @@ class PlannerApp:
     def _build_day_view(self) -> urwid.Widget:
         lines = [urwid.Text(self.selected_date.strftime("%A, %d %B %Y"), align="center")]
 
+        def _make_hour_focus_callback(h):
+            def callback(_user_data=None):
+                self.day_view_focus_hour = h
+                self._refresh()
+            return callback
+
         # Filter and prepare events and tasks for the selected day
         daily_events: List[Event] = [e for e in self.events if e.date == self.selected_date]
         daily_tasks: List[Task] = [t for t in self.tasks if t.due_date == self.selected_date]
@@ -276,60 +282,58 @@ class PlannerApp:
         timed_items.sort(key=lambda x: x[0])
 
         # Track occupied slots to prevent overlapping displays
-        occupied_slots = set()  # Stores (hour) of occupied slots
+        occupied_slots = {}  # Stores hour -> item
 
         for hour in range(0, 24):
             slot_label = f"{hour:02d}:00"
 
             # Determine if this hour is the focused hour for day view navigation
             is_focused_hour = self.day_view_focus_hour == hour
+            
+            click_cb = _make_hour_focus_callback(hour)
 
-            # Check if this hour is already occupied by a continuing event/task
-            if hour in occupied_slots:
-                text_widget = urwid.Text(f"{slot_label}  (continued)")
-                lines.append(urwid.AttrMap(text_widget, "day_focus" if is_focused_hour else None))
-                continue
+            item_for_this_hour = occupied_slots.get(hour)
 
-            item_for_this_hour = None
-            for item_time, item in timed_items:
-                # Calculate effective start time (for events/tasks)
-                actual_start_dt = datetime.combine(self.selected_date, item_time)
+            if not item_for_this_hour:
+                for item_time, item in timed_items:
+                    # Calculate effective start time (for events/tasks)
+                    actual_start_dt = datetime.combine(self.selected_date, item_time)
 
-                # Calculate effective end time or use duration
-                item_end_dt = None
-                item_duration_td = None
+                    # Calculate effective end time or use duration
+                    item_end_dt = None
+                    item_duration_td = None
 
-                if isinstance(item, Event):
-                    if item.time_end:
-                        item_end_dt = datetime.combine(self.selected_date, item.time_end)
-                        item_duration_td = item_end_dt - actual_start_dt
-                    elif item.duration:
-                        item_duration_td = item.duration
+                    if isinstance(item, Event):
+                        if item.time_end:
+                            item_end_dt = datetime.combine(self.selected_date, item.time_end)
+                            item_duration_td = item_end_dt - actual_start_dt
+                        elif item.duration:
+                            item_duration_td = item.duration
+                            item_end_dt = actual_start_dt + item_duration_td
+                    elif isinstance(item, Task):
+                        if item.duration:
+                            item_duration_td = item.duration
+                            item_end_dt = actual_start_dt + item_duration_td
+
+                    # If no duration or end time, default to 1 hour
+                    if not item_duration_td:
+                        item_duration_td = timedelta(hours=1)
                         item_end_dt = actual_start_dt + item_duration_td
-                elif isinstance(item, Task):
-                    if item.duration:
-                        item_duration_td = item.duration
-                        item_end_dt = actual_start_dt + item_duration_td
 
-                # If no duration or end time, default to 1 hour
-                if not item_duration_td:
-                    item_duration_td = timedelta(hours=1)
-                    item_end_dt = actual_start_dt + item_duration_td
+                    # Check if item starts within this hour slot
+                    # We consider an item starting if its start_time is <= current_time_slot and it hasn't been displayed yet
+                    # And its start_time is before the next hour slot
+                    if actual_start_dt.hour == hour and actual_start_dt.minute == 0:  # Only start events exactly on the hour for now
+                        item_for_this_hour = item
+                        # Mark all hours this item occupies as taken
+                        start_hour = actual_start_dt.hour
+                        end_hour_inclusive = (
+                            actual_start_dt + item_duration_td - timedelta(seconds=1)
+                        ).hour
 
-                # Check if item starts within this hour slot
-                # We consider an item starting if its start_time is <= current_time_slot and it hasn't been displayed yet
-                # And its start_time is before the next hour slot
-                if actual_start_dt.hour == hour and actual_start_dt.minute == 0:  # Only start events exactly on the hour for now
-                    item_for_this_hour = item
-                    # Mark all hours this item occupies as taken
-                    start_hour = actual_start_dt.hour
-                    end_hour_inclusive = (
-                        actual_start_dt + item_duration_td - timedelta(seconds=1)
-                    ).hour
-
-                    for h in range(start_hour, end_hour_inclusive + 1):
-                        occupied_slots.add(h)
-                    break  # Found the item for this hour
+                        for h in range(start_hour, end_hour_inclusive + 1):
+                            occupied_slots[h] = item
+                        break  # Found the item for this hour
 
             if item_for_this_hour:
                 title_str = item_for_this_hour.title
@@ -359,10 +363,10 @@ class PlannerApp:
                 if hour not in occupied_slots:
                     now = datetime.now().time()
                     if now.hour == hour and self.selected_date == date.today():
-                        text_widget = urwid.Text(f"{slot_label} <-- now")
+                        text_widget = ClickableText(f"{slot_label} <-- now", click_cb)
                         lines.append(urwid.AttrMap(text_widget, "day_focus" if is_focused_hour else "selected"))
                     else:
-                        text_widget = urwid.Text(slot_label)
+                        text_widget = ClickableText(slot_label, click_cb)
                         lines.append(urwid.AttrMap(text_widget, "day_focus" if is_focused_hour else None))
 
         # Handle all-day tasks/events separately at the top or bottom
@@ -739,10 +743,15 @@ class PlannerApp:
     def _open_event_dialog(self) -> None:
         if not self.loop: # Added for testing without full Urwid loop init
             return
+            
+        default_start_time = ""
+        if self.view_mode == "day" and self.day_view_focus_hour is not None:
+            default_start_time = f"{self.day_view_focus_hour:02d}:00"
+            
         title_edit = urwid.Edit("Title: ")
         desc_edit = urwid.Edit("Description: ")
         date_edit = urwid.Edit("Date (YYYY-MM-DD): ", self.selected_date.isoformat())
-        start_edit = urwid.Edit("Start (HH:MM, optional): ")
+        start_edit = urwid.Edit("Start (HH:MM, optional): ", default_start_time)
         end_edit = urwid.Edit("End (HH:MM, optional): ")
         duration_edit = urwid.Edit("Duration (HH:MM, optional): ") # Added duration input
         all_day_check = urwid.CheckBox("All day", state=False)
@@ -799,10 +808,15 @@ class PlannerApp:
     def _open_task_dialog(self) -> None:
         if not self.loop: # Added for testing without full Urwid loop init
             return
+            
+        default_due_time = ""
+        if self.view_mode == "day" and self.day_view_focus_hour is not None:
+            default_due_time = f"{self.day_view_focus_hour:02d}:00"
+            
         title_edit = urwid.Edit("Title: ")
         desc_edit = urwid.Edit("Description: ")
         date_edit = urwid.Edit("Due date (YYYY-MM-DD, optional): ", self.selected_date.isoformat())
-        time_edit = urwid.Edit("Due time (HH:MM, optional): ")
+        time_edit = urwid.Edit("Due time (HH:MM, optional): ", default_due_time)
         duration_edit = urwid.Edit("Duration (HH:MM, optional): ") # Added duration input
 
         def on_save(_button: urwid.Button) -> None:
