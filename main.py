@@ -16,6 +16,28 @@ from utils.exporter import export_csv, export_json
 from utils.storage import load_events, load_tasks, save_events, save_tasks
 
 
+class ClickableText(urwid.Text):
+    def __init__(self, markup, on_click=None, user_data=None):
+        super().__init__(markup)
+        self.on_click = on_click
+        self.user_data = user_data
+
+    def mouse_event(self, size, event, button, col, row, focus):
+        if event == "mouse press" and button == 1:
+            if self.on_click:
+                self.on_click(self.user_data)
+                return True
+        return super().mouse_event(size, event, button, col, row, focus)
+
+
+class ClickthroughOverlay(urwid.Overlay):
+    def mouse_event(self, size, event, button, col, row, focus):
+        handled = super().mouse_event(size, event, button, col, row, focus)
+        if not handled and hasattr(self.bottom_w, "mouse_event"):
+            return self.bottom_w.mouse_event(size, event, button, col, row, focus)
+        return handled
+
+
 class PlannerApp:
     def __init__(self) -> None:
         self.cfg: AppConfig = load_config()
@@ -44,15 +66,20 @@ class PlannerApp:
         )
         self._update_footer()
 
+    def _make_detail_callback(self, item: Union[Event, Task]):
+        def callback(_user_data):
+            self._open_detail_view(item)
+        return callback
+
     def _build_sidebar(self) -> urwid.Widget:
         tasks = [t for t in self.tasks if not t.completed]  # Filter completed tasks
-        task_lines = [urwid.Text(("task", f"[ ] {t.title}")) for t in tasks[:10]]
+        task_lines = [ClickableText(("task", f"[ ] {t.title}"), self._make_detail_callback(t)) for t in tasks[:10]]
         if not task_lines:
             task_lines = [urwid.Text("No tasks")]
         timer_line = urwid.Text(self._timer_text())
         upcoming = [e for e in self.events if not e.completed]  # Filter completed events from upcoming
         upcoming.sort(key=lambda e: (e.date, e.time_start or time.min))
-        upcoming_lines = [urwid.Text(("event", u.title)) for u in upcoming[:5]]  # Display title for upcoming events
+        upcoming_lines = [ClickableText(("event", u.title), self._make_detail_callback(u)) for u in upcoming[:5]]  # Display title for upcoming events
         if not upcoming_lines:
             upcoming_lines = [urwid.Text("No upcoming")]
         pile = urwid.Pile(
@@ -90,19 +117,33 @@ class PlannerApp:
             urwid.Text("Mo Tu We Th Fr Sa Su", align="center"),
         ]
         week: List[urwid.Widget] = []
+        
+        def _make_day_callback(d: date):
+            def callback(_user_data):
+                self.selected_date = d
+                self.calendar_focus_date = d
+                self.view_mode = "day"
+                # Reset day view focus when changing view
+                self.day_view_focus_hour = None
+                self._refresh()
+            return callback
+
         for d in month_days:
             label = f"{d.day:2d}"
             has_items = any(e.date == d for e in self.events) or any(
                 t.due_date == d for t in self.tasks if t.due_date
             )
+            
+            click_callback = _make_day_callback(d)
             if d == date.today():
-                cell = urwid.Text(("today", label))
+                cell = ClickableText(("today", label), click_callback)
             elif d == self.calendar_focus_date:  # Highlight the focused date
-                cell = urwid.Text(("selected_date_focus", label))
+                cell = ClickableText(("selected_date_focus", label), click_callback)
             elif has_items:
-                cell = urwid.Text(("has_event", label))
+                cell = ClickableText(("has_event", label), click_callback)
             else:
-                cell = urwid.Text(label)
+                cell = ClickableText(label, click_callback)
+                
             if d.month != self.selected_date.month:
                 cell = urwid.AttrMap(cell, "warning")
             week.append(cell)
@@ -192,7 +233,7 @@ class PlannerApp:
                         check_mark = "[x]" if item_for_this_hour.completed else "[ ]"
 
                     display_text = f"{check_mark} {slot_label} {title_str}{duration_str}"
-                    lines.append(urwid.Text(("event", display_text)))
+                    lines.append(ClickableText(("event", display_text), self._make_detail_callback(item_for_this_hour)))
                 else:
                     lines.append(urwid.Text(slot_label))
 
@@ -311,7 +352,7 @@ class PlannerApp:
                     check_mark = "[x]" if item_for_this_hour.completed else "[ ]"
 
                 display_text = f"{check_mark} {slot_label} {title_str}{duration_str}"
-                text_widget = urwid.Text(display_text)
+                text_widget = ClickableText(display_text, self._make_detail_callback(item_for_this_hour))
                 lines.append(urwid.AttrMap(text_widget, "day_focus" if is_focused_hour else "event"))
             else:
                 # If no item starts and this slot is not explicitly occupied by a continuing event
@@ -381,20 +422,44 @@ class PlannerApp:
         return result
 
     def _update_footer(self) -> None:
+        def make_shortcut_callback(key: str):
+            def callback(_user_data=None):
+                self.keypress(key)
+            return callback
+
         if self.view_mode == "pomodoro":
-            shortcuts = "a abort | s skip | p pause/resume | q quit"
+            shortcuts_data = [
+                ("a", "abort"), ("s", "skip"), ("p", "pause/resume"), ("q", "quit")
+            ]
         else:
-            shortcuts = (
-                "m month | w week | d day | n new event | k new task | "
-                "e edit event | x delete event | E edit task | X delete task | "
-                "c task->event | t timer | q quit"
-            )
+            shortcuts_data = [
+                ("m", "month"), ("w", "week"), ("d", "day"), ("n", "new event"), ("k", "new task"),
+                ("e", "edit event"), ("x", "delete event"), ("E", "edit task"), ("X", "delete task"),
+                ("c", "task->event"), ("t", "timer"), ("q", "quit")
+            ]
         # Add day view specific shortcuts if in day view
         if self.view_mode == "day":
-            shortcuts += " | up/down scroll | enter view details"
+            shortcuts_data.extend([("up", "scroll"), ("down", "scroll"), ("enter", "view details")])
 
-        text = f"{self.message} | {shortcuts}" if self.message else shortcuts
-        self.footer.set_text(text)
+        widgets = []
+        if self.message:
+            widgets.append(urwid.Text(self.message + " | "))
+            
+        for i, (key, label) in enumerate(shortcuts_data):
+            # Render keys and labels, making the whole group clickable
+            shortcut_markup = [("key", f"{key}"), f" {label}"]
+            widgets.append(ClickableText(shortcut_markup, make_shortcut_callback(key)))
+            if i < len(shortcuts_data) - 1:
+                widgets.append(urwid.Text(" | "))
+
+        footer_flow = urwid.Columns([("pack", w) for w in widgets], dividechars=0)
+        self.footer = urwid.Filler(footer_flow, valign="bottom") if not isinstance(self.footer, urwid.Filler) else self.footer
+        if isinstance(self.footer, urwid.Filler):
+            self.footer.original_widget = footer_flow
+        
+        # update drawing frame if needed
+        if self.loop and hasattr(self.loop.widget, "footer"):
+            self.loop.widget.footer = urwid.AttrMap(self.footer, "footer")
 
     def _set_message(self, msg: str) -> None:
         self.message = msg
@@ -594,13 +659,6 @@ class PlannerApp:
                 detail_lines.append(urwid.Text(f"Duration: {h:02d}:{m:02d}"))
             detail_lines.append(urwid.Text(f"Completed: {'Yes' if item.completed else 'No'}"))
 
-        # Add buttons/shortcuts for actions
-        detail_lines.append(urwid.Divider())
-        detail_lines.append(urwid.Text("Shortcuts: m mark/unmark as done | E edit | q close"))
-        
-        list_walker = urwid.SimpleFocusListWalker(detail_lines)
-        list_box = urwid.ListBox(list_walker)
-
         def handle_detail_keypress(key: str):
             if key in ("q", "Q"):
                 self._close_overlay()
@@ -628,14 +686,49 @@ class PlannerApp:
                 elif isinstance(item, Task):
                     self._open_task_edit_dialog(item)
                 return
+            if key == "x": # Delete item from detail view
+                if isinstance(item, Event):
+                    self.events = [e for e in self.events if e is not item]
+                    save_events(self.events)
+                elif isinstance(item, Task):
+                    self.tasks = [t for t in self.tasks if t is not item]
+                    save_tasks(self.tasks)
+                self._set_message(f"'{item.title}' deleted.")
+                self._close_overlay()
+                self.loop.unhandled_input = self.keypress
+                self._refresh()
+                return
             # Pass unhandled keys back to the main loop if needed, though for an overlay this might not be desired.
             # For now, only 'q' and 'm' are handled.
+
+        # Add buttons/shortcuts for actions
+        detail_lines.append(urwid.Divider())
         
-        overlay = urwid.Overlay(
+        def make_detail_sc_cb(k: str):
+            def callback(_ud=None):
+                handle_detail_keypress(k)
+            return callback
+
+        detail_sc_widgets = [
+            urwid.Text("Shortcuts: "),
+            ClickableText([("key", "m"), " mark/unmark as done"], make_detail_sc_cb("m")),
+            urwid.Text(" | "),
+            ClickableText([("key", "E"), " edit"], make_detail_sc_cb("E")),
+            urwid.Text(" | "),
+            ClickableText([("key", "x"), " delete"], make_detail_sc_cb("x")),
+            urwid.Text(" | "),
+            ClickableText([("key", "q"), " close"], make_detail_sc_cb("q"))
+        ]
+        detail_lines.append(urwid.Columns([("pack", w) for w in detail_sc_widgets], dividechars=0))
+        
+        list_walker = urwid.SimpleFocusListWalker(detail_lines)
+        list_box = urwid.ListBox(list_walker)
+        
+        overlay = ClickthroughOverlay(
             urwid.LineBox(list_box, title="Details"),
             self.loop.widget,
             align="center",
-            width=50,
+            width=80,
             valign="middle",
             height=15, # Adjust height dynamically based on content if needed
         )
@@ -693,7 +786,7 @@ class PlannerApp:
                 urwid.Columns([urwid.Button("Save", on_save), urwid.Button("Cancel", on_cancel)]),
             ]
         )
-        overlay = urwid.Overlay(
+        overlay = ClickthroughOverlay(
             urwid.LineBox(pile, title="New Event"),
             self.loop.widget,
             align="center",
@@ -742,7 +835,7 @@ class PlannerApp:
                 urwid.Columns([urwid.Button("Save", on_save), urwid.Button("Cancel", on_cancel)]),
             ]
         )
-        overlay = urwid.Overlay(
+        overlay = ClickthroughOverlay(
             urwid.LineBox(pile, title="New Task"),
             self.loop.widget,
             align="center",
@@ -823,7 +916,7 @@ class PlannerApp:
             urwid.Columns([urwid.Button("Save", on_save), urwid.Button("Cancel", on_cancel)]),
         ])
         
-        overlay = urwid.Overlay(
+        overlay = ClickthroughOverlay(
             urwid.LineBox(urwid.Pile(pile_widgets), title="Edit Event"),
             self.loop.widget,
             align="center",
@@ -857,7 +950,7 @@ class PlannerApp:
                 urwid.Columns([urwid.Button("Delete", on_delete), urwid.Button("Cancel", on_cancel)]),
             ]
         )
-        overlay = urwid.Overlay(
+        overlay = ClickthroughOverlay(
             urwid.LineBox(pile, title="Delete Event"),
             self.loop.widget,
             align="center",
@@ -933,7 +1026,7 @@ class PlannerApp:
             urwid.Columns([urwid.Button("Save", on_save), urwid.Button("Cancel", on_cancel)]),
         ])
         
-        overlay = urwid.Overlay(
+        overlay = ClickthroughOverlay(
             urwid.LineBox(urwid.Pile(pile_widgets), title="Edit Task"),
             self.loop.widget,
             align="center",
@@ -967,7 +1060,7 @@ class PlannerApp:
                 urwid.Columns([urwid.Button("Delete", on_delete), urwid.Button("Cancel", on_cancel)]),
             ]
         )
-        overlay = urwid.Overlay(
+        overlay = ClickthroughOverlay(
             urwid.LineBox(pile, title="Delete Task"),
             self.loop.widget,
             align="center",
@@ -1019,7 +1112,7 @@ class PlannerApp:
                 urwid.Columns([urwid.Button("Convert", on_convert), urwid.Button("Cancel", on_cancel)]),
             ]
         )
-        overlay = urwid.Overlay(
+        overlay = ClickthroughOverlay(
             urwid.LineBox(pile, title="Convert Task"),
             self.loop.widget,
             align="center",
@@ -1070,7 +1163,7 @@ class PlannerApp:
                 urwid.Columns([urwid.Button("Start", on_start), urwid.Button("Cancel", on_cancel)]),
             ]
         )
-        overlay = urwid.Overlay(
+        overlay = ClickthroughOverlay(
             urwid.LineBox(pile, title="Pomodoro"),
             self.loop.widget,
             align="center",
