@@ -180,6 +180,8 @@ class PlannerApp:
             for item_time, item in timed_items:
                 items_by_start_hour.setdefault(item_time.hour, []).append(item)
 
+            occupied_slots = set()
+
             for hour in range(self.cfg.view.week_start_hour, self.cfg.view.week_end_hour + 1):
                 slot_label = f"{hour:02d}:00"
 
@@ -223,15 +225,15 @@ class PlannerApp:
                     ).hour
                     for h in range(start_hour, end_hour_inclusive + 1):
                         occupied_slots.add(h)
-
                 if item_for_this_hour:
                     title_str = item_for_this_hour.title
                     
+                    # Use a short prefix '+' for overlaps instead of '(1/2)' to save space
                     if overlapping_count > 1:
-                        title_str = f"({current_overlap_index + 1}/{overlapping_count}) {title_str}"
+                        title_str = f"+{title_str}"
                         
                     duration_str = ""
-                    check_mark = "[ ]"  # Initialize check_mark here
+                    # Omit check marks and slot labels in week view because columns are only ~6 characters wide
                     if isinstance(item_for_this_hour, Event):
                         if item_for_this_hour.time_end:
                             duration_str = f" ({item_for_this_hour.time_end.strftime('%H:%M')})"
@@ -240,16 +242,14 @@ class PlannerApp:
                             h = total_minutes // 60
                             m = total_minutes % 60
                             duration_str = f" ({h:02d}:{m:02d})"
-                        check_mark = "[x]" if item_for_this_hour.completed else "[ ]"
                     elif isinstance(item_for_this_hour, Task):
                         if item_for_this_hour.duration:
                             total_minutes = int(item_for_this_hour.duration.total_seconds() / 60)
                             h = total_minutes // 60
                             m = total_minutes % 60
                             duration_str = f" ({h:02d}:{m:02d})"
-                        check_mark = "[x]" if item_for_this_hour.completed else "[ ]"
 
-                    display_text = f"{check_mark} {slot_label} {title_str}{duration_str}"
+                    display_text = f"{title_str}{duration_str}"
                     lines.append(ClickableText(("event", display_text), self._make_detail_callback(item_for_this_hour)))
                 else:
                     lines.append(urwid.Text(slot_label))
@@ -267,12 +267,14 @@ class PlannerApp:
                 lines.insert(1, urwid.Text(("header", "All-day: " + ", ".join(all_day_items_titles))))
 
             cols.append(urwid.Pile(lines))
-        return urwid.Pile(
+            
+        week_pile = urwid.Pile(
             [
                 urwid.Text(f"Week {start.isoformat()} - {(start + timedelta(days=6)).isoformat()}", align="center"),
                 urwid.Columns(cols, dividechars=2),
             ]
         )
+        return urwid.Filler(week_pile, valign="top")
 
     def _build_day_view(self) -> urwid.Widget:
         lines = [urwid.Text(self.selected_date.strftime("%A, %d %B %Y"), align="center")]
