@@ -406,19 +406,54 @@ class PlannerApp:
         return ResponsiveWeekGrid()
 
     def _build_day_view(self) -> urwid.Widget:
-        lines = [urwid.Text(self.selected_date.strftime("%A, %d %B %Y"), align="center")]
+        TIME_COL_WIDTH = 8
+        
+        def make_divider(left_edge, time_fill, cross, content_fill, right_edge):
+            return urwid.Columns([
+                ('fixed', 1, urwid.Text(left_edge)),
+                ('fixed', TIME_COL_WIDTH, urwid.Text(time_fill * TIME_COL_WIDTH)),
+                ('fixed', 1, urwid.Text(cross)),
+                urwid.Text(content_fill * 1000, wrap="clip"),
+                ('fixed', 1, urwid.Text(right_edge))
+            ])
+
+        def make_hour_row(time_str, content_widget):
+            return urwid.Columns([
+                ('fixed', 1, urwid.Text("│")),
+                ('fixed', TIME_COL_WIDTH, urwid.Text(f" {time_str} "[:TIME_COL_WIDTH].ljust(TIME_COL_WIDTH))),
+                ('fixed', 1, urwid.Text("│")),
+                content_widget,
+                ('fixed', 1, urwid.Text("│"))
+            ])
+
+        app_self = self
+        date_str = self.selected_date.strftime("%A, %d.%m.%Y").upper()
+
+        top = urwid.Columns([
+            ('fixed', 1, urwid.Text("┌")),
+            urwid.Text("─" * 1000, wrap="clip"),
+            ('fixed', 1, urwid.Text("┐"))
+        ])
+        
+        header_content = urwid.Columns([
+            ('fixed', 1, urwid.Text("│")),
+            urwid.Text(date_str, align="center"),
+            ('fixed', 1, urwid.Text("│"))
+        ])
+        
+        mid = make_divider("├", "─", "┬", "─", "┤")
+        
+        lines = [top, header_content, mid]
 
         def _make_hour_focus_callback(h):
             def callback(_user_data=None):
-                self.day_view_focus_hour = h
-                self._refresh()
+                app_self.day_view_focus_hour = h
+                app_self._refresh()
             return callback
 
-        # Filter and prepare events and tasks for the selected day
         daily_events: List[Event] = [e for e in self.events if e.date == self.selected_date]
         daily_tasks: List[Task] = [t for t in self.tasks if t.due_date == self.selected_date]
 
-        # Combine timed events and tasks, sort by start time
         timed_items = []
         for e in daily_events:
             if e.time_start:
@@ -429,13 +464,28 @@ class PlannerApp:
 
         timed_items.sort(key=lambda x: x[0])
 
-        # Track occupied slots to prevent overlapping displays
         occupied_slots = {}  # Stores hour -> item
-
-        # Pre-group items by start hour
         items_by_start_hour = {}
         for item_time, item in timed_items:
             items_by_start_hour.setdefault(item_time.hour, []).append(item)
+
+        # Handle all-day tasks/events at the top before the schedule
+        all_day_items_titles = []
+        for item in daily_events:
+            if item.all_day:
+                all_day_items_titles.append(f"{'[x]' if item.completed else '[ ]'} {item.title}")
+        for item in daily_tasks:
+            if not item.due_time:
+                all_day_items_titles.append(f"{'[x]' if item.completed else '[ ]'} {item.title}")
+
+        if all_day_items_titles:
+            lines.insert(1, urwid.Columns([
+                ('fixed', 1, urwid.Text("│")),
+                urwid.Text("All-day: " + ", ".join(all_day_items_titles)),
+                ('fixed', 1, urwid.Text("│"))
+            ]))
+            lines.insert(2, make_divider("├", "─", "┴", "─", "┤"))
+            # The top divider logic shifts if all-day is present, let's keep it simple: we use a single row for all-day
 
         for hour in range(0, 24):
             slot_label = f"{hour:02d}:00"
@@ -446,20 +496,16 @@ class PlannerApp:
             overlapping_count = 0
             current_overlap_index = 0
 
-            # If this slot is not continued from a prior hour, see if any items start now
             if not item_for_this_hour and hour in items_by_start_hour:
                 hour_items = items_by_start_hour[hour]
                 overlapping_count = len(hour_items)
                 
-                # Use overlap index to select
                 current_overlap_index = self.overlap_indices.get((self.selected_date, hour), 0) % overlapping_count
                 item = hour_items[current_overlap_index]
                 
                 item_for_this_hour = item
 
-                # Calculate duration to mark slots as occupied
                 actual_start_dt = datetime.combine(self.selected_date, time(hour, 0))
-                item_end_dt = None
                 item_duration_td = None
 
                 if isinstance(item, Event):
@@ -475,9 +521,7 @@ class PlannerApp:
                     item_duration_td = timedelta(hours=1)
 
                 start_hour = hour
-                end_hour_inclusive = (
-                    actual_start_dt + item_duration_td - timedelta(seconds=1)
-                ).hour
+                end_hour_inclusive = (actual_start_dt + item_duration_td - timedelta(seconds=1)).hour
 
                 for h in range(start_hour, end_hour_inclusive + 1):
                     occupied_slots[h] = item
@@ -485,11 +529,7 @@ class PlannerApp:
             if item_for_this_hour:
                 title_str = item_for_this_hour.title
                 
-                # Check how many overlapping items there are using _get_item_at_hour logic globally
-                # since we only computed overlapping_count for newly added items
                 if overlapping_count == 0:
-                    # In case it's a continued item, we should still show the overlap indicator
-                    # Determine start hour of this item to get correct overlap count
                     if isinstance(item_for_this_hour, Event) and item_for_this_hour.time_start:
                         sh = item_for_this_hour.time_start.hour
                     elif isinstance(item_for_this_hour, Task) and item_for_this_hour.due_time:
@@ -530,33 +570,38 @@ class PlannerApp:
 
                 if not is_start_hour:
                     check_mark = "   "
+                    display_text = "  "
+                else:
+                    display_text = f" {check_mark} {title_str}{duration_str}"
 
-                display_text = f"{check_mark} {slot_label} {title_str}{duration_str}"
                 text_widget = ClickableText(display_text, self._make_detail_callback(item_for_this_hour))
-                lines.append(urwid.AttrMap(text_widget, "day_focus" if is_focused_hour else "event"))
+                content_widget = urwid.AttrMap(text_widget, "day_focus" if is_focused_hour else "event")
+                
+                lines.append(make_hour_row(slot_label, content_widget))
+                
+                if hour + 1 in occupied_slots and occupied_slots[hour + 1] == item_for_this_hour:
+                    lines.append(make_divider("├", "─", "┤", " ", "│"))
+                else:
+                    if hour < 23:
+                        lines.append(make_divider("├", "─", "┼", "─", "┤"))
+
             else:
-                # If no item starts and this slot is not explicitly occupied by a continuing event
-                if hour not in occupied_slots:
-                    now = datetime.now().time()
-                    if now.hour == hour and self.selected_date == date.today():
-                        text_widget = ClickableText(f"{slot_label} <-- now", click_cb)
-                        lines.append(urwid.AttrMap(text_widget, "day_focus" if is_focused_hour else "selected"))
-                    else:
-                        text_widget = ClickableText(slot_label, click_cb)
-                        lines.append(urwid.AttrMap(text_widget, "day_focus" if is_focused_hour else None))
+                now = datetime.now().time()
+                if now.hour == hour and self.selected_date == date.today():
+                    display_text = " <-- now"
+                    style = "day_focus" if is_focused_hour else "selected"
+                else:
+                    display_text = " "
+                    style = "day_focus" if is_focused_hour else None
 
-        # Handle all-day tasks/events separately at the top or bottom
-        all_day_items_titles = []
-        for item in daily_events:
-            if item.all_day:
-                all_day_items_titles.append(f"{'[x]' if item.completed else '[ ]'} {item.title}")
-        for item in daily_tasks:
-            if not item.due_time:  # assuming tasks without due_time are all-day
-                all_day_items_titles.append(f"{'[x]' if item.completed else '[ ]'} {item.title}")
+                text_widget = ClickableText(display_text, click_cb)
+                content_widget = urwid.AttrMap(text_widget, style)
+                
+                lines.append(make_hour_row(slot_label, content_widget))
+                if hour < 23:
+                    lines.append(make_divider("├", "─", "┼", "─", "┤"))
 
-        if all_day_items_titles:
-            lines.insert(1, urwid.Text(("header", "All-day: " + ", ".join(all_day_items_titles))))
-            lines.insert(2, urwid.Divider())
+        lines.append(make_divider("└", "─", "┴", "─", "┘"))
 
         return urwid.ListBox(urwid.SimpleFocusListWalker(lines))
 
