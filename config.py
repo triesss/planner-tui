@@ -76,4 +76,5 @@ PALETTE = [
     ("day_focus", "black", "dark cyan", "bold"), # Added day focus style
     ("day_focus", "black", "dark cyan", "bold"), # Added day focus style
     ("timer", "light magenta", ""),
+    ("bold", "", "", "bold"),
 ]

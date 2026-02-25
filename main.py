@@ -83,17 +83,17 @@ class PlannerApp:
         upcoming_lines = [ClickableText(("event", u.title), self._make_detail_callback(u)) for u in upcoming[:5]]  # Display title for upcoming events
         if not upcoming_lines:
             upcoming_lines = [urwid.Text("No upcoming")]
+        tasks_box = urwid.LineBox(urwid.Pile(task_lines), title=" Tasks ")
+        timer_box = urwid.LineBox(timer_line, title=" Pomodoro ")
+        upcoming_box = urwid.LineBox(urwid.Pile(upcoming_lines), title=" Upcoming ")
+        
         pile = urwid.Pile(
             [
-                urwid.Text(("header", "Tasks")),
-                urwid.Divider("-"),
-                *task_lines,
+                tasks_box,
                 urwid.Divider(),
-                urwid.Text(("header", "Pomodoro")),
-                timer_line,
+                timer_box,
                 urwid.Divider(),
-                urwid.Text(("header", "Upcoming")),
-                *upcoming_lines,
+                upcoming_box,
             ]
         )
         return urwid.Filler(pile, valign="top")
@@ -155,7 +155,7 @@ class PlannerApp:
                 
                 day_names = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"]
                 day_str = "│" + "│".join([d.center(CELL_WIDTH) for d in day_names]) + "│"
-                day_row = urwid.Padding(urwid.Text(day_str, align="center"), align="center", width=TOTAL_WIDTH)
+                day_row = urwid.Padding(urwid.Text(("bold", day_str), align="center"), align="center", width=TOTAL_WIDTH)
                 
                 row_sep = make_line("├", "┼", "┤")
                 bottom = make_line("└", "┴", "┘")
