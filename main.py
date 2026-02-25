@@ -113,9 +113,10 @@ class PlannerApp:
     def _build_month_view(self) -> urwid.Widget:
         cal = calendar.Calendar()
         month_days = list(cal.itermonthdates(self.selected_date.year, self.selected_date.month))
+        day_headers = [urwid.Text(day) for day in ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"]]
         lines = [
             urwid.Text(self.selected_date.strftime("%B %Y"), align="center"),
-            urwid.Text("Mo Tu We Th Fr Sa Su", align="center"),
+            urwid.Columns(day_headers, dividechars=1),
         ]
         week: List[urwid.Widget] = []
         
