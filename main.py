@@ -111,77 +111,104 @@ class PlannerApp:
         return self._build_month_view()
 
     def _build_month_view(self) -> urwid.Widget:
-        cal = calendar.Calendar()
-        month_days = list(cal.itermonthdates(self.selected_date.year, self.selected_date.month))
+        app_self = self
         
-        CELL_WIDTH = 6
-        TOTAL_WIDTH = 7 * CELL_WIDTH + 8
+        class ResponsiveMonthGrid(urwid.WidgetWrap):
+            def __init__(self):
+                self._last_maxcol = None
+                super().__init__(urwid.SolidFill(' '))
 
-        def make_line(left, cross, right, fill="─"):
-            segment = fill * CELL_WIDTH
-            middle = cross.join([segment] * 7)
-            return urwid.Padding(urwid.Text(left + middle + right, align="center"), align="center", width=TOTAL_WIDTH)
-
-        header_top = make_line("┌", "─", "┐")
-        header_text_str = "│" + self.selected_date.strftime("%B %Y").upper().center(TOTAL_WIDTH - 2) + "│"
-        header_text = urwid.Padding(urwid.Text(header_text_str, align="center"), align="center", width=TOTAL_WIDTH)
-        header_mid = make_line("├", "┬", "┤")
-        
-        day_names = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"]
-        day_str = "│" + "│".join([d.center(CELL_WIDTH) for d in day_names]) + "│"
-        day_row = urwid.Padding(urwid.Text(day_str, align="center"), align="center", width=TOTAL_WIDTH)
-        
-        row_sep = make_line("├", "┼", "┤")
-        bottom = make_line("└", "┴", "┘")
-
-        lines = [header_top, header_text, header_mid, day_row, row_sep]
-        week = []
-        
-        def _make_day_callback(d: date):
-            def callback(_user_data):
-                self.selected_date = d
-                self.calendar_focus_date = d
-                self.view_mode = "day"
-                # Reset day view focus when changing view
-                self.day_view_focus_hour = None
-                self._refresh()
-            return callback
-
-        for i, d in enumerate(month_days):
-            label = f"{d.day:2d}"
-            label = label.center(CELL_WIDTH)
-            
-            has_items = any(e.date == d for e in self.events) or any(
-                t.due_date == d for t in self.tasks if t.due_date
-            )
-            
-            click_callback = _make_day_callback(d)
-            if d == date.today():
-                cell = ClickableText(("today", label), click_callback)
-            elif d == self.calendar_focus_date:  # Highlight the focused date
-                cell = ClickableText(("selected_date_focus", label), click_callback)
-            elif has_items:
-                cell = ClickableText(("has_event", label), click_callback)
-            else:
-                cell = ClickableText(label, click_callback)
+            def render(self, size, focus=False):
+                # Ensure the terminal is wide enough
+                term_width = 80
+                if app_self.loop and hasattr(app_self.loop, 'screen'):
+                    term_width, _ = app_self.loop.screen.get_cols_rows()
                 
-            if d.month != self.selected_date.month:
-                cell = urwid.AttrMap(cell, "warning")
-            
-            week.append(('fixed', CELL_WIDTH, cell))
-            
-            if len(week) == 7:
-                row_items = [('fixed', 1, urwid.Text("│"))]
-                for w in week:
-                    row_items.append(w)
-                    row_items.append(('fixed', 1, urwid.Text("│")))
-                lines.append(urwid.Padding(urwid.Columns(row_items), align="center", width=TOTAL_WIDTH))
-                if i < len(month_days) - 1:
-                    lines.append(row_sep)
-                else:
-                    lines.append(bottom)
+                if term_width < 68:
+                    self._w = urwid.Filler(urwid.Text("Fenster zu klein. Bitte auf mindestens 68 Spalten verbreitern.", align="center"))
+                    return super().render(size, focus)
+                    
+                maxcol = size[0]
+                if maxcol != self._last_maxcol:
+                    self._last_maxcol = maxcol
+                    self._w = self._build_grid(maxcol)
+                return super().render(size, focus)
+
+            def _build_grid(self, maxcol):
+                cal = calendar.Calendar()
+                month_days = list(cal.itermonthdates(app_self.selected_date.year, app_self.selected_date.month))
+                
+                CELL_WIDTH = (maxcol - 8) // 7
+                if CELL_WIDTH < 2: 
+                    CELL_WIDTH = 2
+                TOTAL_WIDTH = 7 * CELL_WIDTH + 8
+
+                def make_line(left, cross, right, fill="─"):
+                    segment = fill * CELL_WIDTH
+                    middle = cross.join([segment] * 7)
+                    return urwid.Padding(urwid.Text(left + middle + right, align="center"), align="center", width=TOTAL_WIDTH)
+
+                header_top = make_line("┌", "─", "┐")
+                header_text_str = "│" + app_self.selected_date.strftime("%B %Y").upper().center(TOTAL_WIDTH - 2) + "│"
+                header_text = urwid.Padding(urwid.Text(header_text_str, align="center"), align="center", width=TOTAL_WIDTH)
+                header_mid = make_line("├", "┬", "┤")
+                
+                day_names = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"]
+                day_str = "│" + "│".join([d.center(CELL_WIDTH) for d in day_names]) + "│"
+                day_row = urwid.Padding(urwid.Text(day_str, align="center"), align="center", width=TOTAL_WIDTH)
+                
+                row_sep = make_line("├", "┼", "┤")
+                bottom = make_line("└", "┴", "┘")
+
+                lines = [header_top, header_text, header_mid, day_row, row_sep]
                 week = []
-        return urwid.ListBox(urwid.SimpleFocusListWalker(lines))
+                
+                def _make_day_callback(d: date):
+                    def callback(_user_data):
+                        app_self.selected_date = d
+                        app_self.calendar_focus_date = d
+                        app_self.view_mode = "day"
+                        app_self.day_view_focus_hour = None
+                        app_self._refresh()
+                    return callback
+
+                for i, d in enumerate(month_days):
+                    label = f"{d.day:2d}"
+                    label = label.center(CELL_WIDTH)
+                    
+                    has_items = any(e.date == d for e in app_self.events) or any(
+                        t.due_date == d for t in app_self.tasks if t.due_date
+                    )
+                    
+                    click_callback = _make_day_callback(d)
+                    if d == date.today():
+                        cell = ClickableText(("today", label), click_callback)
+                    elif d == app_self.calendar_focus_date:
+                        cell = ClickableText(("selected_date_focus", label), click_callback)
+                    elif has_items:
+                        cell = ClickableText(("has_event", label), click_callback)
+                    else:
+                        cell = ClickableText(label, click_callback)
+                        
+                    if d.month != app_self.selected_date.month:
+                        cell = urwid.AttrMap(cell, "warning")
+                    
+                    week.append(('fixed', CELL_WIDTH, cell))
+                    
+                    if len(week) == 7:
+                        row_items = [('fixed', 1, urwid.Text("│"))]
+                        for w in week:
+                            row_items.append(w)
+                            row_items.append(('fixed', 1, urwid.Text("│")))
+                        lines.append(urwid.Padding(urwid.Columns(row_items), align="center", width=TOTAL_WIDTH))
+                        if i < len(month_days) - 1:
+                            lines.append(row_sep)
+                        else:
+                            lines.append(bottom)
+                        week = []
+                return urwid.ListBox(urwid.SimpleFocusListWalker(lines))
+
+        return ResponsiveMonthGrid()
 
     def _build_week_view(self) -> urwid.Widget:
         start = self.selected_date - timedelta(days=self.selected_date.weekday())
