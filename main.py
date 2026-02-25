@@ -146,16 +146,16 @@ class PlannerApp:
                 def make_line(left, cross, right, fill="─"):
                     segment = fill * CELL_WIDTH
                     middle = cross.join([segment] * 7)
-                    return urwid.Padding(urwid.Text(left + middle + right, align="center"), align="center", width=TOTAL_WIDTH)
+                    return urwid.Padding(urwid.Text(left + middle + right, align="center"), align="center", width=min(TOTAL_WIDTH, maxcol))
 
                 header_top = make_line("┌", "─", "┐")
                 header_text_str = "│" + app_self.selected_date.strftime("%B %Y").upper().center(TOTAL_WIDTH - 2) + "│"
-                header_text = urwid.Padding(urwid.Text(header_text_str, align="center"), align="center", width=TOTAL_WIDTH)
+                header_text = urwid.Padding(urwid.Text(header_text_str, align="center"), align="center", width=min(TOTAL_WIDTH, maxcol))
                 header_mid = make_line("├", "┬", "┤")
                 
-                day_names = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"]
+                day_names = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]
                 day_str = "│" + "│".join([d.center(CELL_WIDTH) for d in day_names]) + "│"
-                day_row = urwid.Padding(urwid.Text(("bold", day_str), align="center"), align="center", width=TOTAL_WIDTH)
+                day_row = urwid.Padding(urwid.Text(("bold", day_str), align="center"), align="center", width=min(TOTAL_WIDTH, maxcol))
                 
                 row_sep = make_line("├", "┼", "┤")
                 bottom = make_line("└", "┴", "┘")
@@ -202,7 +202,7 @@ class PlannerApp:
                         for w in week:
                             row_items.append(w)
                             row_items.append(('fixed', 1, urwid.Text("│")))
-                        lines.append(urwid.Padding(urwid.Columns(row_items), align="center", width=TOTAL_WIDTH))
+                        lines.append(urwid.Padding(urwid.Columns(row_items), align="center", width=min(TOTAL_WIDTH, maxcol)))
                         if i < len(month_days) - 1:
                             lines.append(row_sep)
                         else:
@@ -213,127 +213,197 @@ class PlannerApp:
         return ResponsiveMonthGrid()
 
     def _build_week_view(self) -> urwid.Widget:
-        start = self.selected_date - timedelta(days=self.selected_date.weekday())
-        cols = []
-        for i in range(7):
-            day = start + timedelta(days=i)
+        app_self = self
+        
+        class ResponsiveWeekGrid(urwid.WidgetWrap):
+            def __init__(self):
+                self._last_maxcol = None
+                super().__init__(urwid.SolidFill(' '))
 
-            daily_events: List[Event] = [e for e in self.events if e.date == day]
-            daily_tasks: List[Task] = [t for t in self.tasks if t.due_date == day]
-
-            timed_items = []
-            for e in daily_events:
-                if e.time_start:
-                    timed_items.append((e.time_start, e))
-            for t in daily_tasks:
-                if t.due_time:
-                    timed_items.append((t.due_time, t))
-
-            timed_items.sort(key=lambda x: x[0])
-
-            lines = [urwid.Text(day.strftime("%a %d"))]
-
-            # Track occupied slots for week view as well for simplified display
-            # Pre-group items by start hour
-            items_by_start_hour = {}
-            for item_time, item in timed_items:
-                items_by_start_hour.setdefault(item_time.hour, []).append(item)
-
-            occupied_slots = set()
-
-            for hour in range(self.cfg.view.week_start_hour, self.cfg.view.week_end_hour + 1):
-                slot_label = f"{hour:02d}:00"
-
-                # Check if this hour is already occupied by a continuing event/task
-                if hour in occupied_slots:
-                    lines.append(urwid.Text(f"{slot_label}  (continued)"))
-                    continue
-
-                item_for_this_hour = None
-                overlapping_count = 0
-                current_overlap_index = 0
-
-                if hour in items_by_start_hour:
-                    hour_items = items_by_start_hour[hour]
-                    overlapping_count = len(hour_items)
+            def render(self, size, focus=False):
+                # Ensure the terminal is wide enough
+                term_width = 80
+                if app_self.loop and hasattr(app_self.loop, 'screen'):
+                    term_width, _ = app_self.loop.screen.get_cols_rows()
+                
+                if term_width < 68:
+                    self._w = urwid.Filler(urwid.Text("Fenster zu klein. Bitte auf mindestens 68 Spalten verbreitern.", align="center"))
+                    return super().render(size, focus)
                     
-                    # Use overlap index to select
-                    current_overlap_index = self.overlap_indices.get((day, hour), 0) % overlapping_count
-                    item = hour_items[current_overlap_index]
+                maxcol = size[0]
+                if maxcol != self._last_maxcol:
+                    self._last_maxcol = maxcol
+                    self._w = self._build_grid(maxcol)
+                return super().render(size, focus)
+
+            def _build_grid(self, maxcol):
+                start = app_self.selected_date - timedelta(days=app_self.selected_date.weekday())
+                
+                CELL_WIDTH = (maxcol - 8) // 7
+                if CELL_WIDTH < 2: 
+                    CELL_WIDTH = 2
+                TOTAL_WIDTH = 7 * CELL_WIDTH + 8
+
+                def make_line(left, cross, right, fill="─"):
+                    segment = fill * CELL_WIDTH
+                    middle = cross.join([segment] * 7)
+                    return urwid.Padding(urwid.Text(left + middle + right, align="center"), align="center", width=min(TOTAL_WIDTH, maxcol))
+
+                # Header
+                header_top = make_line("┌", "─", "┐")
+                title_text = f"WEEK {start.isoformat()} - {(start + timedelta(days=6)).isoformat()}"
+                header_text_str = "│" + title_text.center(TOTAL_WIDTH - 2) + "│"
+                header_text = urwid.Padding(urwid.Text(header_text_str, align="center"), align="center", width=min(TOTAL_WIDTH, maxcol))
+                header_mid = make_line("├", "┬", "┤")
+
+                # Day Headers
+                day_names = []
+                for i in range(7):
+                    d = start + timedelta(days=i)
+                    day_names.append(d.strftime("%a %d").upper())
+                
+                day_str = "│" + "│".join([d.center(CELL_WIDTH) for d in day_names]) + "│"
+                day_row = urwid.Padding(urwid.Text(("bold", day_str), align="center"), align="center", width=min(TOTAL_WIDTH, maxcol))
+                
+                row_sep = make_line("├", "┼", "┤")
+                bottom = make_line("└", "┴", "┘")
+
+                cols = []
+                for i in range(7):
+                    day = start + timedelta(days=i)
+
+                    daily_events: List[Event] = [e for e in app_self.events if e.date == day]
+                    daily_tasks: List[Task] = [t for t in app_self.tasks if t.due_date == day]
+
+                    timed_items = []
+                    for e in daily_events:
+                        if e.time_start:
+                            timed_items.append((e.time_start, e))
+                    for t in daily_tasks:
+                        if t.due_time:
+                            timed_items.append((t.due_time, t))
+
+                    timed_items.sort(key=lambda x: x[0])
+
+                    lines = []
+
+                    # Add all-day items for the day
+                    all_day_items_titles = []
+                    for item in daily_events:
+                        if item.all_day:
+                            all_day_items_titles.append(f"{'[x]' if item.completed else '[ ]'} {item.title}")
+                    for item in daily_tasks:
+                        if not item.due_time:
+                            all_day_items_titles.append(f"{'[x]' if item.completed else '[ ]'} {item.title}")
+
+                    if all_day_items_titles:
+                        lines.append(urwid.Text(("header", "All-day: " + ", ".join(all_day_items_titles))))
+                        lines.append(urwid.Divider())
+
+                    # Track occupied slots for week view
+                    items_by_start_hour = {}
+                    for item_time, item in timed_items:
+                        items_by_start_hour.setdefault(item_time.hour, []).append(item)
+
+                    occupied_slots = set()
+
+                    for hour in range(app_self.cfg.view.week_start_hour, app_self.cfg.view.week_end_hour + 1):
+                        slot_label = f"{hour:02d}:00"
+
+                        if hour in occupied_slots:
+                            lines.append(urwid.Text(f"{slot_label}  (cont.)"))
+                            continue
+
+                        item_for_this_hour = None
+                        overlapping_count = 0
+                        current_overlap_index = 0
+
+                        if hour in items_by_start_hour:
+                            hour_items = items_by_start_hour[hour]
+                            overlapping_count = len(hour_items)
+                            
+                            current_overlap_index = app_self.overlap_indices.get((day, hour), 0) % overlapping_count
+                            item = hour_items[current_overlap_index]
+                            
+                            item_for_this_hour = item
+                            
+                            item_duration_td = None
+                            if isinstance(item, Event):
+                                if item.time_end:
+                                    item_duration_td = datetime.combine(day, item.time_end) - datetime.combine(
+                                        day, item.time_start
+                                    )
+                                elif item.duration:
+                                    item_duration_td = item.duration
+                            elif isinstance(item, Task) and item.duration:
+                                item_duration_td = item.duration
+
+                            if not item_duration_td:
+                                item_duration_td = timedelta(hours=1)
+
+                            start_hour = hour
+                            end_hour_inclusive = (
+                                datetime.combine(day, time(hour, 0)) + item_duration_td - timedelta(seconds=1)
+                            ).hour
+                            for h in range(start_hour, end_hour_inclusive + 1):
+                                occupied_slots.add(h)
+                                
+                        if item_for_this_hour:
+                            title_str = item_for_this_hour.title
+                            
+                            if overlapping_count > 1:
+                                title_str = f"+{title_str}"
+                                
+                            duration_str = ""
+                            if isinstance(item_for_this_hour, Event):
+                                if item_for_this_hour.time_end:
+                                    duration_str = f" ({item_for_this_hour.time_end.strftime('%H:%M')})"
+                                elif item_for_this_hour.duration:
+                                    total_minutes = int(item_for_this_hour.duration.total_seconds() / 60)
+                                    h = total_minutes // 60
+                                    m = total_minutes % 60
+                                    duration_str = f" ({h:02d}:{m:02d})"
+                            elif isinstance(item_for_this_hour, Task):
+                                if item_for_this_hour.duration:
+                                    total_minutes = int(item_for_this_hour.duration.total_seconds() / 60)
+                                    h = total_minutes // 60
+                                    m = total_minutes % 60
+                                    duration_str = f" ({h:02d}:{m:02d})"
+
+                            display_text = f"{title_str}{duration_str}"
+                            # Adjust width so clicking the text isn't wildly exceeding the grid visual width
+                            lines.append(ClickableText(("event", display_text), app_self._make_detail_callback(item_for_this_hour)))
+                        else:
+                            lines.append(urwid.Text(slot_label))
+
+                    last_col_lines_count = len(lines)
+                    cols.append(('fixed', CELL_WIDTH, urwid.Pile(lines)))
                     
-                    item_for_this_hour = item
-                    
-                    # Mark all hours this item occupies as taken
-                    item_duration_td = None
-                    if isinstance(item, Event):
-                        if item.time_end:
-                            item_duration_td = datetime.combine(day, item.time_end) - datetime.combine(
-                                day, item.time_start
-                            )
-                        elif item.duration:
-                            item_duration_td = item.duration
-                    elif isinstance(item, Task) and item.duration:
-                        item_duration_td = item.duration
+                # We must use a FLOW widget for the dividers, not SolidFill (which is BOX).
+                # We can create a Pile of Text("│") equal to the number of rows.
+                def make_v_divider(height):
+                    return urwid.Pile([urwid.Text("│") for _ in range(height)])
 
-                    if not item_duration_td:
-                        item_duration_td = timedelta(hours=1)  # Default to 1 hour
+                row_items = [('fixed', 1, make_v_divider(last_col_lines_count))]
+                for i, c in enumerate(cols):
+                    row_items.append(c)
+                    row_items.append(('fixed', 1, make_v_divider(last_col_lines_count)))
 
-                    start_hour = hour
-                    end_hour_inclusive = (
-                        datetime.combine(day, time(hour, 0)) + item_duration_td - timedelta(seconds=1)
-                    ).hour
-                    for h in range(start_hour, end_hour_inclusive + 1):
-                        occupied_slots.add(h)
-                if item_for_this_hour:
-                    title_str = item_for_this_hour.title
-                    
-                    # Use a short prefix '+' for overlaps instead of '(1/2)' to save space
-                    if overlapping_count > 1:
-                        title_str = f"+{title_str}"
-                        
-                    duration_str = ""
-                    # Omit check marks and slot labels in week view because columns are only ~6 characters wide
-                    if isinstance(item_for_this_hour, Event):
-                        if item_for_this_hour.time_end:
-                            duration_str = f" ({item_for_this_hour.time_end.strftime('%H:%M')})"
-                        elif item_for_this_hour.duration:
-                            total_minutes = int(item_for_this_hour.duration.total_seconds() / 60)
-                            h = total_minutes // 60
-                            m = total_minutes % 60
-                            duration_str = f" ({h:02d}:{m:02d})"
-                    elif isinstance(item_for_this_hour, Task):
-                        if item_for_this_hour.duration:
-                            total_minutes = int(item_for_this_hour.duration.total_seconds() / 60)
-                            h = total_minutes // 60
-                            m = total_minutes % 60
-                            duration_str = f" ({h:02d}:{m:02d})"
+                grid_cols = urwid.Padding(urwid.Columns(row_items), align="center", width=min(TOTAL_WIDTH, maxcol))
 
-                    display_text = f"{title_str}{duration_str}"
-                    lines.append(ClickableText(("event", display_text), self._make_detail_callback(item_for_this_hour)))
-                else:
-                    lines.append(urwid.Text(slot_label))
+                final_lines = [
+                    header_top,
+                    header_text,
+                    header_mid,
+                    day_row,
+                    row_sep,
+                    grid_cols,
+                    bottom
+                ]
+                
+                return urwid.Filler(urwid.Pile(final_lines), valign="top")
 
-            # Add all-day items for the day
-            all_day_items_titles = []
-            for item in daily_events:
-                if item.all_day:
-                    all_day_items_titles.append(f"{'[x]' if item.completed else '[ ]'} {item.title}")
-            for item in daily_tasks:
-                if not item.due_time:  # assuming tasks without due_time are all-day
-                    all_day_items_titles.append(f"{'[x]' if item.completed else '[ ]'} {item.title}")
-
-            if all_day_items_titles:
-                lines.insert(1, urwid.Text(("header", "All-day: " + ", ".join(all_day_items_titles))))
-
-            cols.append(urwid.Pile(lines))
-            
-        week_pile = urwid.Pile(
-            [
-                urwid.Text(f"Week {start.isoformat()} - {(start + timedelta(days=6)).isoformat()}", align="center"),
-                urwid.Columns(cols, dividechars=2),
-            ]
-        )
-        return urwid.Filler(week_pile, valign="top")
+        return ResponsiveWeekGrid()
 
     def _build_day_view(self) -> urwid.Widget:
         lines = [urwid.Text(self.selected_date.strftime("%A, %d %B %Y"), align="center")]
