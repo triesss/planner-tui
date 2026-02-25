@@ -546,20 +546,25 @@ class PlannerApp:
 
         # Handle calendar navigation in month view
         if self.view_mode == "month":
+            navigated = False
             if key == "left":
                 self.calendar_focus_date -= timedelta(days=1)
-                self._refresh()
-                return
-            if key == "right":
+                navigated = True
+            elif key == "right":
                 self.calendar_focus_date += timedelta(days=1)
-                self._refresh()
-                return
-            if key == "up":
+                navigated = True
+            elif key == "up":
                 self.calendar_focus_date -= timedelta(days=7)
-                self._refresh()
-                return
-            if key == "down":
+                navigated = True
+            elif key == "down":
                 self.calendar_focus_date += timedelta(days=7)
+                navigated = True
+
+            if navigated:
+                cal = calendar.Calendar()
+                month_days = list(cal.itermonthdates(self.selected_date.year, self.selected_date.month))
+                if self.calendar_focus_date not in month_days:
+                    self.selected_date = self.calendar_focus_date
                 self._refresh()
                 return
             if key == "enter":  # Added: Jump to day view on Enter
