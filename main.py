@@ -113,12 +113,29 @@ class PlannerApp:
     def _build_month_view(self) -> urwid.Widget:
         cal = calendar.Calendar()
         month_days = list(cal.itermonthdates(self.selected_date.year, self.selected_date.month))
-        day_headers = [urwid.Text(day) for day in ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"]]
-        lines = [
-            urwid.Text(self.selected_date.strftime("%B %Y"), align="center"),
-            urwid.Columns(day_headers, dividechars=1),
-        ]
-        week: List[urwid.Widget] = []
+        
+        CELL_WIDTH = 6
+        TOTAL_WIDTH = 7 * CELL_WIDTH + 8
+
+        def make_line(left, cross, right, fill="─"):
+            segment = fill * CELL_WIDTH
+            middle = cross.join([segment] * 7)
+            return urwid.Padding(urwid.Text(left + middle + right, align="center"), align="center", width=TOTAL_WIDTH)
+
+        header_top = make_line("┌", "─", "┐")
+        header_text_str = "│" + self.selected_date.strftime("%B %Y").upper().center(TOTAL_WIDTH - 2) + "│"
+        header_text = urwid.Padding(urwid.Text(header_text_str, align="center"), align="center", width=TOTAL_WIDTH)
+        header_mid = make_line("├", "┬", "┤")
+        
+        day_names = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"]
+        day_str = "│" + "│".join([d.center(CELL_WIDTH) for d in day_names]) + "│"
+        day_row = urwid.Padding(urwid.Text(day_str, align="center"), align="center", width=TOTAL_WIDTH)
+        
+        row_sep = make_line("├", "┼", "┤")
+        bottom = make_line("└", "┴", "┘")
+
+        lines = [header_top, header_text, header_mid, day_row, row_sep]
+        week = []
         
         def _make_day_callback(d: date):
             def callback(_user_data):
@@ -130,8 +147,10 @@ class PlannerApp:
                 self._refresh()
             return callback
 
-        for d in month_days:
+        for i, d in enumerate(month_days):
             label = f"{d.day:2d}"
+            label = label.center(CELL_WIDTH)
+            
             has_items = any(e.date == d for e in self.events) or any(
                 t.due_date == d for t in self.tasks if t.due_date
             )
@@ -148,9 +167,19 @@ class PlannerApp:
                 
             if d.month != self.selected_date.month:
                 cell = urwid.AttrMap(cell, "warning")
-            week.append(cell)
+            
+            week.append(('fixed', CELL_WIDTH, cell))
+            
             if len(week) == 7:
-                lines.append(urwid.Columns(week, dividechars=1))
+                row_items = [('fixed', 1, urwid.Text("│"))]
+                for w in week:
+                    row_items.append(w)
+                    row_items.append(('fixed', 1, urwid.Text("│")))
+                lines.append(urwid.Padding(urwid.Columns(row_items), align="center", width=TOTAL_WIDTH))
+                if i < len(month_days) - 1:
+                    lines.append(row_sep)
+                else:
+                    lines.append(bottom)
                 week = []
         return urwid.ListBox(urwid.SimpleFocusListWalker(lines))
 
