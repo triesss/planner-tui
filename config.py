@@ -65,6 +65,7 @@ PALETTE = [
     ("footer", "black", "light gray"),
     ("today", "dark red", ""),
     ("has_event", "dark green", ""),
+    ("today_focus", "light red", "black"),
     ("selected", "black", "dark cyan"),
     ("day_focus", "black", "dark cyan", "bold"), # Added day focus style
     ("day_focus", "black", "dark cyan", "bold"), # Added day focus style

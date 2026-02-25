@@ -181,10 +181,12 @@ class PlannerApp:
                     )
                     
                     click_callback = _make_day_callback(d)
-                    if d == date.today():
-                        cell = ClickableText(("today", label), click_callback)
+                    if d == date.today() and d == app_self.calendar_focus_date:
+                        cell = ClickableText(("today_focus", label), click_callback)
                     elif d == app_self.calendar_focus_date:
                         cell = ClickableText(("selected_date_focus", label), click_callback)
+                    elif d == date.today():
+                        cell = ClickableText(("today", label), click_callback)
                     elif has_items:
                         cell = ClickableText(("has_event", label), click_callback)
                     else:
