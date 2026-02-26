@@ -24,8 +24,8 @@ class PomodoroConfig:
 class ViewConfig:
     week_start_hour: int = 6
     week_end_hour: int = 15
-    day_start_hour: int = 8
-    day_end_hour: int = 20
+    day_start_hour: int = 12
+    day_end_hour: int = 16
 
 
 @dataclass

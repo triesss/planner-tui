@@ -38,6 +38,44 @@ class ClickthroughOverlay(urwid.Overlay):
         return handled
 
 
+class SlicedText(urwid.Widget):
+    _sizing = frozenset(['flow'])
+
+    def __init__(self, full_text, row_index, max_rows, attr_map, click_cb):
+        self.row_index = row_index
+        self.max_rows = max_rows
+        self.click_cb = click_cb
+        
+        text_widget = ClickableText(full_text, click_cb)
+        text_widget.set_wrap_mode("space")
+        self._attr_text = urwid.AttrMap(text_widget, attr_map)
+
+    def rows(self, size, focus=False):
+        return 1
+
+    def render(self, size, focus=False):
+        maxcol = size[0]
+        canvas = self._attr_text.render((maxcol,))
+        
+        if self.row_index < canvas.rows():
+            line_list = list(canvas.content())
+            if self.row_index < len(line_list):
+                line_text = b"".join(chunk[2] for chunk in line_list[self.row_index]).decode('utf-8').rstrip()
+                
+                # Append ellipsis if this is the last available slot but there's more text
+                if self.row_index == self.max_rows - 1 and self.row_index < canvas.rows() - 1:
+                    if len(line_text) > maxcol - 3:
+                        line_text = line_text[:maxcol-3] + "..."
+                    else:
+                        line_text += "..."
+                        
+                safe_widget = urwid.AttrMap(ClickableText(line_text, self.click_cb), self._attr_text.attr_map)
+                return safe_widget.render((maxcol,))
+
+        empty = urwid.AttrMap(ClickableText(" ", self.click_cb), self._attr_text.attr_map)
+        return empty.render((maxcol,))
+
+
 class PlannerApp:
     def __init__(self) -> None:
         self.cfg: AppConfig = load_config()
@@ -480,11 +518,15 @@ class PlannerApp:
         TIME_COL_WIDTH = 8
         
         def make_divider(left_edge, time_fill, cross, content_fill, right_edge):
+            if isinstance(content_fill, str):
+                content = urwid.Text(content_fill * 1000, wrap="clip")
+            else:
+                content = content_fill
             return urwid.Columns([
                 ('fixed', 1, urwid.Text(left_edge)),
                 ('fixed', TIME_COL_WIDTH, urwid.Text(time_fill * TIME_COL_WIDTH)),
                 ('fixed', 1, urwid.Text(cross)),
-                urwid.Text(content_fill * 1000, wrap="clip"),
+                content,
                 ('fixed', 1, urwid.Text(right_edge))
             ])
 
@@ -623,43 +665,43 @@ class PlannerApp:
                 if overlapping_count > 1:
                     title_str = f"({current_overlap_index + 1}/{overlapping_count}) {title_str}"
                     
-                duration_str = ""
-                is_start_hour = False
-                
-                if isinstance(item_for_this_hour, Event):
-                    if item_for_this_hour.time_start and item_for_this_hour.time_start.hour == hour:
-                        is_start_hour = True
-                    if item_for_this_hour.time_end:
-                        duration_str = f" ({item_for_this_hour.time_end.strftime('%H:%M')})"
-                    elif item_for_this_hour.duration:
-                        total_minutes = int(item_for_this_hour.duration.total_seconds() / 60)
-                        h = total_minutes // 60
-                        m = total_minutes % 60
-                        duration_str = f" ({h:02d}:{m:02d})"
-                    check_mark = "[x]" if item_for_this_hour.completed else "[ ]"
-                elif isinstance(item_for_this_hour, Task):
-                    if item_for_this_hour.due_time and item_for_this_hour.due_time.hour == hour:
-                        is_start_hour = True
-                    if item_for_this_hour.duration:
-                        total_minutes = int(item_for_this_hour.duration.total_seconds() / 60)
-                        h = total_minutes // 60
-                        m = total_minutes % 60
-                        duration_str = f" ({h:02d}:{m:02d})"
-                    check_mark = "[x]" if item_for_this_hour.completed else "[ ]"
-
-                if not is_start_hour:
-                    check_mark = "   "
-                    display_text = "  "
+                check_mark = "[x]" if item_for_this_hour.completed else "[ ]"
+                desc = getattr(item_for_this_hour, "description", "") or ""
+                if desc:
+                    full_text = f" {check_mark} {title_str}: {desc}"
                 else:
-                    display_text = f" {check_mark} {title_str}{duration_str}"
+                    full_text = f" {check_mark} {title_str}"
 
-                text_widget = ClickableText(display_text, self._make_detail_callback(item_for_this_hour))
-                content_widget = urwid.AttrMap(text_widget, "day_focus" if is_focused_hour else "event")
+                # Calculate start/end hour of this item for relative index calculation
+                if isinstance(item_for_this_hour, Event):
+                    event_start = item_for_this_hour.time_start.hour if item_for_this_hour.time_start else hour
+                    event_dur = item_for_this_hour.duration or timedelta(hours=1)
+                    if item_for_this_hour.time_end:
+                        event_dur = datetime.combine(self.selected_date, item_for_this_hour.time_end) - datetime.combine(self.selected_date, time(event_start, 0))
+                elif isinstance(item_for_this_hour, Task):
+                    event_start = item_for_this_hour.due_time.hour if item_for_this_hour.due_time else hour
+                    event_dur = item_for_this_hour.duration or timedelta(hours=1)
+                else:
+                    event_start = hour
+                    event_dur = timedelta(hours=1)
+
+                event_end = (datetime.combine(self.selected_date, time(event_start,0)) + event_dur - timedelta(seconds=1)).hour
                 
+                num_hours = event_end - event_start + 1
+                max_rows = 2 * num_hours - 1
+                current_relative_hour = hour - event_start
+                hour_row_index = 2 * current_relative_hour
+                
+                attr = "day_focus" if is_focused_hour else "event"
+                cb = self._make_detail_callback(item_for_this_hour)
+                
+                content_widget = SlicedText(full_text, hour_row_index, max_rows, attr, cb)
                 lines.append(make_hour_row(slot_label, content_widget))
                 
                 if hour + 1 in occupied_slots and occupied_slots[hour + 1] == item_for_this_hour:
-                    lines.append(make_divider("├", "─", "┤", " ", "│"))
+                    divider_row_index = hour_row_index + 1
+                    divider_content = SlicedText(full_text, divider_row_index, max_rows, attr, cb)
+                    lines.append(make_divider("├", "─", "┤", divider_content, "│"))
                 else:
                     if idx < len(rendered_hours) - 1:
                         lines.append(make_divider("├", "─", "┼", "─", "┤"))
