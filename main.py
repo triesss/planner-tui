@@ -419,6 +419,28 @@ class PlannerApp:
 
         return ResponsiveWeekGrid()
 
+    def _get_rendered_day_hours(self, target_date: date) -> List[int]:
+        daily_events: List[Event] = [e for e in self.events if e.date == target_date]
+        daily_tasks: List[Task] = [t for t in self.tasks if t.due_date == target_date]
+
+        timed_items = []
+        for e in daily_events:
+            if e.time_start:
+                timed_items.append((e.time_start, e))
+        for t in daily_tasks:
+            if t.due_time:
+                timed_items.append((t.due_time, t))
+
+        early_hours = set()
+        late_hours = set()
+        for item_time, _ in timed_items:
+            if item_time.hour < self.cfg.view.day_start_hour:
+                early_hours.add(item_time.hour)
+            if item_time.hour > self.cfg.view.day_end_hour:
+                late_hours.add(item_time.hour)
+
+        return sorted(list(early_hours)) + list(range(self.cfg.view.day_start_hour, self.cfg.view.day_end_hour + 1)) + sorted(list(late_hours))
+
     def _build_day_view(self) -> urwid.Widget:
         TIME_COL_WIDTH = 8
         
@@ -507,7 +529,7 @@ class PlannerApp:
             lines.insert(2, make_divider("├", "─", "┴", "─", "┤"))
             # The top divider logic shifts if all-day is present, let's keep it simple: we use a single row for all-day
 
-        rendered_hours = sorted(list(early_hours)) + list(range(app_self.cfg.view.day_start_hour, app_self.cfg.view.day_end_hour + 1)) + sorted(list(late_hours))
+        rendered_hours = self._get_rendered_day_hours(self.selected_date)
 
         for idx, hour in enumerate(rendered_hours):
             slot_label = f"{hour:02d}:00"
@@ -788,18 +810,23 @@ class PlannerApp:
 
         # Handle day view navigation
         if self.view_mode == "day":
+            rendered_hours = self._get_rendered_day_hours(self.selected_date)
             if self.day_view_focus_hour is None:  # Should not happen with current _build_view logic but for safety
                 self.day_view_focus_hour = datetime.now().hour
 
             if key == "up":
-                if self.day_view_focus_hour > 0:
-                    self.day_view_focus_hour -= 1
-                    self._refresh()
+                if self.day_view_focus_hour in rendered_hours:
+                    idx = rendered_hours.index(self.day_view_focus_hour)
+                    if idx > 0:
+                        self.day_view_focus_hour = rendered_hours[idx - 1]
+                        self._refresh()
                 return
             if key == "down":
-                if self.day_view_focus_hour < 23:
-                    self.day_view_focus_hour += 1
-                    self._refresh()
+                if self.day_view_focus_hour in rendered_hours:
+                    idx = rendered_hours.index(self.day_view_focus_hour)
+                    if idx < len(rendered_hours) - 1:
+                        self.day_view_focus_hour = rendered_hours[idx + 1]
+                        self._refresh()
                 return
             if key == "enter":  # Open detail view for item at focused hour
                 item = self._get_item_at_hour(self.selected_date, self.day_view_focus_hour)
