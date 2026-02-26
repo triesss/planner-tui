@@ -1330,7 +1330,7 @@ class PlannerApp:
             align="center",
             width=60,
             valign="middle",
-            height=len(pile_widgets) + 3, # Dynamic height
+            height="pack", # Dynamic height
         )
         self.loop.widget = overlay
 
@@ -1440,7 +1440,7 @@ class PlannerApp:
             align="center",
             width=60,
             valign="middle",
-            height=len(pile_widgets) + 3, # Dynamic height
+            height="pack", # Dynamic height
         )
         self.loop.widget = overlay
 
