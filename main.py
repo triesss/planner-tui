@@ -302,12 +302,20 @@ class PlannerApp:
 
                     # Track occupied slots for week view
                     items_by_start_hour = {}
+                    early_hours = set()
+                    late_hours = set()
                     for item_time, item in timed_items:
                         items_by_start_hour.setdefault(item_time.hour, []).append(item)
+                        if item_time.hour < app_self.cfg.view.week_start_hour:
+                            early_hours.add(item_time.hour)
+                        if item_time.hour > app_self.cfg.view.week_end_hour:
+                            late_hours.add(item_time.hour)
 
                     occupied_slots = set()
+                    
+                    rendered_hours = sorted(list(early_hours)) + list(range(app_self.cfg.view.week_start_hour, app_self.cfg.view.week_end_hour + 1)) + sorted(list(late_hours))
 
-                    for hour in range(app_self.cfg.view.week_start_hour, app_self.cfg.view.week_end_hour + 1):
+                    for hour in rendered_hours:
                         slot_label = f"{hour:02d}:00"
 
                         if hour in occupied_slots:
@@ -376,18 +384,24 @@ class PlannerApp:
                         else:
                             lines.append(urwid.Text(slot_label))
 
-                    last_col_lines_count = len(lines)
                     cols.append(('fixed', CELL_WIDTH, urwid.Pile(lines)))
+                    
+                # Ensure all columns have the exact same number of lines by padding with empty lines
+                max_lines_count = max(len(c[2].contents) for c in cols)
+                for c in cols:
+                    pile = c[2]
+                    while len(pile.contents) < max_lines_count:
+                        pile.contents.append((urwid.Text(" "), pile.options()))
                     
                 # We must use a FLOW widget for the dividers, not SolidFill (which is BOX).
                 # We can create a Pile of Text("│") equal to the number of rows.
                 def make_v_divider(height):
                     return urwid.Pile([urwid.Text("│") for _ in range(height)])
 
-                row_items = [('fixed', 1, make_v_divider(last_col_lines_count))]
+                row_items = [('fixed', 1, make_v_divider(max_lines_count))]
                 for i, c in enumerate(cols):
                     row_items.append(c)
-                    row_items.append(('fixed', 1, make_v_divider(last_col_lines_count)))
+                    row_items.append(('fixed', 1, make_v_divider(max_lines_count)))
 
                 grid_cols = urwid.Padding(urwid.Columns(row_items), align="center", width=min(TOTAL_WIDTH, maxcol))
 
@@ -465,9 +479,15 @@ class PlannerApp:
         timed_items.sort(key=lambda x: x[0])
 
         occupied_slots = {}  # Stores hour -> item
+        early_hours = set()
+        late_hours = set()
         items_by_start_hour = {}
         for item_time, item in timed_items:
             items_by_start_hour.setdefault(item_time.hour, []).append(item)
+            if item_time.hour < app_self.cfg.view.day_start_hour:
+                early_hours.add(item_time.hour)
+            if item_time.hour > app_self.cfg.view.day_end_hour:
+                late_hours.add(item_time.hour)
 
         # Handle all-day tasks/events at the top before the schedule
         all_day_items_titles = []
@@ -487,7 +507,9 @@ class PlannerApp:
             lines.insert(2, make_divider("├", "─", "┴", "─", "┤"))
             # The top divider logic shifts if all-day is present, let's keep it simple: we use a single row for all-day
 
-        for hour in range(0, 24):
+        rendered_hours = sorted(list(early_hours)) + list(range(app_self.cfg.view.day_start_hour, app_self.cfg.view.day_end_hour + 1)) + sorted(list(late_hours))
+
+        for idx, hour in enumerate(rendered_hours):
             slot_label = f"{hour:02d}:00"
             is_focused_hour = self.day_view_focus_hour == hour
             click_cb = _make_hour_focus_callback(hour)
@@ -582,7 +604,7 @@ class PlannerApp:
                 if hour + 1 in occupied_slots and occupied_slots[hour + 1] == item_for_this_hour:
                     lines.append(make_divider("├", "─", "┤", " ", "│"))
                 else:
-                    if hour < 23:
+                    if idx < len(rendered_hours) - 1:
                         lines.append(make_divider("├", "─", "┼", "─", "┤"))
 
             else:
@@ -598,7 +620,7 @@ class PlannerApp:
                 content_widget = urwid.AttrMap(text_widget, style)
                 
                 lines.append(make_hour_row(slot_label, content_widget))
-                if hour < 23:
+                if idx < len(rendered_hours) - 1:
                     lines.append(make_divider("├", "─", "┼", "─", "┤"))
 
         lines.append(make_divider("└", "─", "┴", "─", "┘"))
