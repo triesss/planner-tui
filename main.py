@@ -306,10 +306,28 @@ class PlannerApp:
                     late_hours = set()
                     for item_time, item in timed_items:
                         items_by_start_hour.setdefault(item_time.hour, []).append(item)
-                        if item_time.hour < app_self.cfg.view.week_start_hour:
-                            early_hours.add(item_time.hour)
-                        if item_time.hour > app_self.cfg.view.week_end_hour:
-                            late_hours.add(item_time.hour)
+                        
+                        actual_start_dt = datetime.combine(day, time(item_time.hour, 0))
+                        item_duration_td = None
+                        if isinstance(item, Event):
+                            if item.time_end:
+                                item_duration_td = datetime.combine(day, item.time_end) - actual_start_dt
+                            elif item.duration:
+                                item_duration_td = item.duration
+                        elif isinstance(item, Task) and item.duration:
+                            item_duration_td = item.duration
+
+                        if not item_duration_td:
+                            item_duration_td = timedelta(hours=1)
+
+                        start_hour = item_time.hour
+                        end_hour_inclusive = (actual_start_dt + item_duration_td - timedelta(seconds=1)).hour
+                        
+                        for h in range(start_hour, end_hour_inclusive + 1):
+                            if h < app_self.cfg.view.week_start_hour:
+                                early_hours.add(h)
+                            if h > app_self.cfg.view.week_end_hour:
+                                late_hours.add(h)
 
                     occupied_slots = set()
                     
@@ -433,11 +451,28 @@ class PlannerApp:
 
         early_hours = set()
         late_hours = set()
-        for item_time, _ in timed_items:
-            if item_time.hour < self.cfg.view.day_start_hour:
-                early_hours.add(item_time.hour)
-            if item_time.hour > self.cfg.view.day_end_hour:
-                late_hours.add(item_time.hour)
+        for item_time, item in timed_items:
+            actual_start_dt = datetime.combine(target_date, time(item_time.hour, 0))
+            item_duration_td = None
+            if isinstance(item, Event):
+                if item.time_end:
+                    item_duration_td = datetime.combine(target_date, item.time_end) - actual_start_dt
+                elif item.duration:
+                    item_duration_td = item.duration
+            elif isinstance(item, Task) and item.duration:
+                item_duration_td = item.duration
+
+            if not item_duration_td:
+                item_duration_td = timedelta(hours=1)
+
+            start_hour = item_time.hour
+            end_hour_inclusive = (actual_start_dt + item_duration_td - timedelta(seconds=1)).hour
+            
+            for h in range(start_hour, end_hour_inclusive + 1):
+                if h < self.cfg.view.day_start_hour:
+                    early_hours.add(h)
+                if h > self.cfg.view.day_end_hour:
+                    late_hours.add(h)
 
         return sorted(list(early_hours)) + list(range(self.cfg.view.day_start_hour, self.cfg.view.day_end_hour + 1)) + sorted(list(late_hours))
 
